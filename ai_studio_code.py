@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-import html
 import json
 import requests
 import time
-from datetime import datetime, date, timedelta
+import pandas as pd
+from datetime import datetime, date
 from bs4 import BeautifulSoup
 import streamlit as st
 import streamlit.components.v1 as components
@@ -11,7 +11,7 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------------------------
-# 1. CONSTANTS & SYSTEM OPTIONS
+# 1. CONSTANTS, SYSTEM OPTIONS & JSON DUMMY DATA
 # ---------------------------------------------------------------------------
 TOTAL_STEPS = 12
 STATUS_OPTIONS = ["Draft", "Planned", "Open", "Submitted to Regulator", "Complete", "Closed", "Cancelled"]
@@ -30,24 +30,37 @@ MOCK_GRC_LIBRARY = {
     }
 }
 
-DUMMY_DOCUMENTS = [
-    {"id": "ENG-2026-04821", "title": "FY26 Basel III Capital Adequacy Examination", "regulator": "HKMA, PRA", "date": "2026-01-12", "status": "Open", "theme": "Prudential"},
-    {"id": "ENG-2026-03912", "title": "Consumer Duty Outcomes Monitoring Review", "regulator": "FCA", "date": "2026-02-14", "status": "Draft", "theme": "Consumer Duty"},
-    {"id": "ENG-2025-09214", "title": "Cross-Border Data Flows Enquiry", "regulator": "MAS", "date": "2025-11-30", "status": "Complete", "theme": "Data Privacy"},
-    {"id": "ENG-2025-08102", "title": "AML Systems & Controls Assessment", "regulator": "FINMA", "date": "2025-10-05", "status": "Closed", "theme": "Financial Crime"}
-]
-
-DUMMY_CONTROLS = [
-    {"eng_id": "ENG-2026-04821", "title": "FY26 Basel III Capital Adequacy", "ctrl_id": "CTRL-1077", "control": "C-CRED-44 Underwriting Standards", "status": "Partially Covered"},
-    {"eng_id": "ENG-2026-03912", "title": "Consumer Duty Outcomes", "ctrl_id": "CTRL-2021", "control": "C-REG-01 Compliance Reporting", "status": "Covered"},
-    {"eng_id": "ENG-2025-09214", "title": "Cross-Border Data Flows", "ctrl_id": "CTRL-3392", "control": "C-TECH-12 Data Privacy Shield", "status": "Gap"}
-]
-
-DUMMY_RESPONSES = [
-    {"title": "Standard Basel III Clarification Letter", "category": "Capital Adequacy", "version": "v2.1", "usage": "14 times"},
-    {"title": "Consumer Duty Data Request Template", "category": "Consumer Protection", "version": "v1.4", "usage": "28 times"},
-    {"title": "Sanctions Screening False Positive Explanation", "category": "Financial Crime", "version": "v3.0", "usage": "45 times"}
-]
+DUMMY_DATA_JSON = """
+{
+    "documents": [
+        {"id": "ENG-2026-04821", "title": "FY26 Basel III Capital Adequacy Examination", "regulator": "HKMA, PRA", "date": "2026-01-12", "status": "Open", "theme": "Prudential"},
+        {"id": "ENG-2026-03912", "title": "Consumer Duty Outcomes Monitoring Review", "regulator": "FCA", "date": "2026-02-14", "status": "Draft", "theme": "Consumer Duty"},
+        {"id": "ENG-2025-09214", "title": "Cross-Border Data Flows Enquiry", "regulator": "MAS", "date": "2025-11-30", "status": "Complete", "theme": "Data Privacy"},
+        {"id": "ENG-2025-08102", "title": "AML Systems & Controls Assessment", "regulator": "FINMA", "date": "2025-10-05", "status": "Closed", "theme": "Financial Crime"},
+        {"id": "ENG-2026-05001", "title": "Operational Resilience Framework Audit", "regulator": "SEC", "date": "2026-03-01", "status": "Planned", "theme": "Operational Resilience"},
+        {"id": "ENG-2026-05112", "title": "Algorithmic Trading Market Conduct Probe", "regulator": "BaFin", "date": "2026-04-15", "status": "Open", "theme": "Market Conduct"}
+    ],
+    "controls": [
+        {"eng_id": "ENG-2026-04821", "title": "FY26 Basel III Capital Adequacy", "ctrl_id": "CTRL-1077", "control": "C-CRED-44 Underwriting Standards", "status": "Partially Covered"},
+        {"eng_id": "ENG-2026-03912", "title": "Consumer Duty Outcomes", "ctrl_id": "CTRL-2021", "control": "C-REG-01 Compliance Reporting", "status": "Covered"},
+        {"eng_id": "ENG-2025-09214", "title": "Cross-Border Data Flows", "ctrl_id": "CTRL-3392", "control": "C-TECH-12 Data Privacy Shield", "status": "Gap"},
+        {"eng_id": "ENG-2026-05001", "title": "OpRes Framework Audit", "ctrl_id": "CTRL-5510", "control": "C-OPS-05 BCP Testing", "status": "Covered"},
+        {"eng_id": "ENG-2026-05112", "title": "Algo Trading Probe", "ctrl_id": "CTRL-8821", "control": "C-MKT-99 Trade Surveillance", "status": "Partially Covered"}
+    ],
+    "responses": [
+        {"title": "Standard Basel III Clarification Letter", "category": "Capital Adequacy", "version": "v2.1", "usage": "14", "last_updated": "2026-01-10", "status": "Reusable"},
+        {"title": "Consumer Duty Data Request Template", "category": "Consumer Protection", "version": "v1.4", "usage": "28", "last_updated": "2026-02-01", "status": "Reusable"},
+        {"title": "Sanctions Screening False Positive Explanation", "category": "Financial Crime", "version": "v3.0", "usage": "45", "last_updated": "2025-11-20", "status": "Reusable"},
+        {"title": "Data Localization Exemption Request", "category": "Data Privacy", "version": "v1.1", "usage": "8", "last_updated": "2025-09-15", "status": "Reusable"},
+        {"title": "Draft Algorithmic Model Risk Assessment", "category": "Market Conduct", "version": "v0.1", "usage": "0", "last_updated": "2026-03-22", "status": "Draft"},
+        {"title": "BaFin Initial Inquiry Response Template", "category": "Market Conduct", "version": "v0.2", "usage": "0", "last_updated": "2026-04-05", "status": "Draft"}
+    ]
+}
+"""
+app_data = json.loads(DUMMY_DATA_JSON)
+DUMMY_DOCUMENTS = app_data["documents"]
+DUMMY_CONTROLS = app_data["controls"]
+DUMMY_RESPONSES = app_data["responses"]
 
 # ---------------------------------------------------------------------------
 # 2. CORE UTILITIES
@@ -75,7 +88,6 @@ def call_gemini_with_retry(client, model_id, prompt, retries=5):
             raise e
 
 def process_engagement_extraction(url, api_key, model_id):
-    """Level 1: Extraction of details."""
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
@@ -95,7 +107,6 @@ def process_engagement_extraction(url, api_key, model_id):
         st.error(f"AI Extraction Failure: {e}"); return None
 
 def generate_tasks_for_engagement(api_key, model_id, engagement_data):
-    """Level 2: Task Generation."""
     try:
         client = genai.Client(api_key=api_key)
         prompt = f"Based on: {json.dumps(engagement_data)}, generate 3 specific operational tasks. JSON: ai_tasks (list of dicts with title, desc, date, owner, initials)."
@@ -118,47 +129,57 @@ def _get_dashboard_html(r):
     lib_data = MOCK_GRC_LIBRARY.get(l1_tax, MOCK_GRC_LIBRARY["Regulatory Compliance"])
     
     def render_items(items):
-        return "".join([f"<div style='background:#fff; border:1px solid #eee; padding:10px; border-radius:6px; margin-bottom:8px; display:flex; justify-content:space-between;'><div><div style='font-size:11.5px; font-weight:700;'>{i['id']} {i['name']}</div><div style='font-size:10px; color:#666;'>{i.get('note','')}</div></div><span style='border:1px solid #0ca30c; color:#0ca30c; padding:2px 8px; border-radius:10px; font-size:9px; font-weight:800;'>COVERED</span></div>" for i in items])
+        return "".join([f"<div style='background:#ffffff; border:1px solid #e2e8f0; padding:12px; border-radius:8px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; box-shadow: 0 1px 2px rgba(0,0,0,0.02);'><div><div style='font-size:12px; font-weight:600; color:#1e293b;'>{i['id']} {i['name']}</div><div style='font-size:11px; color:#64748b; margin-top:2px;'>{i.get('note','')}</div></div><span style='background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; padding:4px 10px; border-radius:12px; font-size:10px; font-weight:600;'>COVERED</span></div>" for i in items])
 
     html_template = f"""
-    <div style="font-family: sans-serif; padding:10px; background:#f9f9f7; color:#1e293b;">
-        <div style="border-top: 1px solid #007377; background:#fff; padding:15px; border: 1px solid #e1e0d9; border-radius:4px; margin-bottom:20px;">
-            <div style="font-size:14px; font-weight:700; color:#0d1b2a; margin-bottom:15px;">Engagement details</div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
+    <div style="font-family: 'Inter', sans-serif; padding:10px; color:#0f172a;">
+        <div style="background:#ffffff; padding:20px; border: 1px solid #e2e8f0; border-radius:12px; margin-bottom:24px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+            <div style="font-size:16px; font-weight:600; color:#0f172a; margin-bottom:18px; border-bottom:1px solid #f1f5f9; padding-bottom:10px;">Engagement Core Details</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
                 <div>
-                    <div style="font-size:10.5px; font-weight:600; color:#475569; margin-bottom:3px;">Engagement Title</div>
-                    <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:8px 12px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; color:#1e293b;">{r.get('title') or 'N/A'} <span style="color:#f59e0b;">🔒</span></div>
-                    <br><div style="font-size:10.5px; font-weight:600; color:#475569; margin-bottom:3px;">Market</div>
-                    <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:8px 12px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; color:#1e293b;">{r.get('market') or 'N/A'} <span style="color:#f59e0b;">🔒</span></div>
-                    <br><div style="font-size:10.5px; font-weight:600; color:#475569; margin-bottom:3px;">Engagement ID</div>
-                    <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:8px 12px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; color:#1e293b;">{r.get('engagement_id') or 'None'} <span style="color:#f59e0b;">🔒</span></div>
+                    <div style="font-size:11px; font-weight:600; color:#64748b; margin-bottom:6px; text-transform:uppercase;">Engagement Title</div>
+                    <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:10px 14px; border-radius:6px; font-size:13px; color:#334155; margin-bottom:16px;">{r.get('title') or 'N/A'}</div>
+                    
+                    <div style="font-size:11px; font-weight:600; color:#64748b; margin-bottom:6px; text-transform:uppercase;">Market</div>
+                    <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:10px 14px; border-radius:6px; font-size:13px; color:#334155; margin-bottom:16px;">{r.get('market') or 'N/A'}</div>
+                    
+                    <div style="font-size:11px; font-weight:600; color:#64748b; margin-bottom:6px; text-transform:uppercase;">Engagement ID</div>
+                    <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:10px 14px; border-radius:6px; font-size:13px; color:#334155;">{r.get('engagement_id') or 'None'}</div>
                 </div>
                 <div>
-                    <div style="font-size:10.5px; font-weight:600; color:#475569; margin-bottom:3px;">Region(s)</div>
-                    <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:8px 12px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; color:#1e293b;">{r.get('regions') or 'N/A'} <span style="color:#f59e0b;">🔒</span></div>
-                    <br><div style="font-size:10.5px; font-weight:600; color:#475569; margin-bottom:3px;">Regulator</div>
-                    <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:8px 12px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; color:#1e293b;">{r.get('regulator') or 'N/A'} <span style="color:#f59e0b;">🔒</span></div>
-                    <br><div style="font-size:10.5px; font-weight:600; color:#475569; margin-bottom:3px;">Engagement Process Record ID</div>
-                    <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:8px 12px; border-radius:4px; font-size:12px; display:flex; justify-content:space-between; color:#1e293b;">{r.get('process_id') or 'None'} <span style="color:#f59e0b;">🔒</span></div>
+                    <div style="font-size:11px; font-weight:600; color:#64748b; margin-bottom:6px; text-transform:uppercase;">Region(s)</div>
+                    <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:10px 14px; border-radius:6px; font-size:13px; color:#334155; margin-bottom:16px;">{r.get('regions') or 'N/A'}</div>
+                    
+                    <div style="font-size:11px; font-weight:600; color:#64748b; margin-bottom:6px; text-transform:uppercase;">Regulator</div>
+                    <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:10px 14px; border-radius:6px; font-size:13px; color:#334155; margin-bottom:16px;">{r.get('regulator') or 'N/A'}</div>
+                    
+                    <div style="font-size:11px; font-weight:600; color:#64748b; margin-bottom:6px; text-transform:uppercase;">Process Record ID</div>
+                    <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:10px 14px; border-radius:6px; font-size:13px; color:#334155;">{r.get('process_id') or 'None'}</div>
                 </div>
             </div>
-            <div style="margin-top:15px; display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
-                <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:10px; border-radius:4px; font-size:11px;">
-                    <span style="color:#64748b;">LOB:</span> <b>{(r.get('lob_text') or 'N/A').replace(' > ', ' › ')}</b>
+            <div style="margin-top:20px; display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+                <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:12px; border-radius:6px; font-size:12px;">
+                    <span style="color:#64748b;">Line of Business:</span> <b style="color:#0f172a;">{(r.get('lob_text') or 'N/A').replace(' > ', ' › ')}</b>
                 </div>
-                <div style="background:#f8fafc; border:1px solid #e1e0d9; padding:10px; border-radius:4px; font-size:11px;">
-                    <span style="color:#64748b;">TAX:</span> <b>{(r.get('tax_text') or 'N/A').replace(' > ', ' › ')}</b>
+                <div style="background:#f8fafc; border:1px solid #f1f5f9; padding:12px; border-radius:6px; font-size:12px;">
+                    <span style="color:#64748b;">Taxonomy:</span> <b style="color:#0f172a;">{(r.get('tax_text') or 'N/A').replace(' > ', ' › ')}</b>
                 </div>
             </div>
         </div>
-        <div style="background:#fff; border: 1px solid #e1e0d9; padding:20px; border-radius:4px;">
-            <div style="font-size:15px; font-weight:700; color:#0d1b2a; margin-bottom:15px;">Controls In Scope [FR-4.5]</div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:30px;">
-                <div>{render_items(lib_data['controls'])}</div>
-                <div>{render_items(lib_data['policies'])}</div>
+        <div style="background:#ffffff; border: 1px solid #e2e8f0; padding:20px; border-radius:12px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+            <div style="font-size:16px; font-weight:600; color:#0f172a; margin-bottom:18px; border-bottom:1px solid #f1f5f9; padding-bottom:10px;">Controls In Scope</div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:24px;">
+                <div>
+                    <div style="font-size:12px; font-weight:600; color:#64748b; margin-bottom:10px;">Primary Controls</div>
+                    {render_items(lib_data['controls'])}
+                </div>
+                <div>
+                    <div style="font-size:12px; font-weight:600; color:#64748b; margin-bottom:10px;">Associated Policies</div>
+                    {render_items(lib_data['policies'])}
+                </div>
             </div>
-            <div style="margin-top:15px; font-size:12px; color:#475569;">
-                Control ID: <b>{r.get('control_id') or 'CTRL-1077'}</b>
+            <div style="margin-top:20px; font-size:13px; color:#475569; background:#f8fafc; padding:12px; border-radius:6px; border:1px solid #f1f5f9;">
+                Linked Control ID: <b style="color:#0f172a;">{r.get('control_id') or 'CTRL-1077'}</b>
             </div>
         </div>
     </div>
@@ -169,16 +190,18 @@ def _get_dashboard_html(r):
 # 4. MAIN APP ROUTING
 # ---------------------------------------------------------------------------
 def run_app():
-    st.set_page_config(page_title="Reg Engagement", layout="wide")
+    st.set_page_config(page_title="Reg Engagement", layout="wide", page_icon="🏦")
     
     st.markdown("""
     <style>
-        .udp-header { background:linear-gradient(135deg,#0d1b2a,#1b263b); color:#fff; padding:20px 24px; border-radius:12px; margin-bottom:20px; font-family:sans-serif; }
-        .rationale-card { position: relative; margin-left: 45px; border: 1px solid #e1e0d9; border-radius: 8px; padding: 20px; margin-bottom: 25px; background: white; font-family: sans-serif; }
-        .card-icon { position: absolute; left: -50px; top: 0; width: 34px; height: 34px; background: #0369a1; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; }
-        .card-line { position: absolute; left: -34px; top: 34px; bottom: -25px; width: 2px; background: #e1e0d9; }
-        .avatar { background:#134e4a; color:white; width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; border: 2px solid #fff; }
-        .module-card { background:#fff; border:1px solid #e1e0d9; border-radius:10px; padding:20px; margin-bottom:15px; box-shadow:0 1px 3px rgba(0,0,0,0.02); }
+        .udp-header { background: linear-gradient(135deg, #1e293b, #334155); color: #ffffff; padding: 24px; border-radius: 12px; margin-bottom: 24px; font-family: 'Inter', sans-serif; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .rationale-card { position: relative; margin-left: 50px; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; margin-bottom: 24px; background: #ffffff; font-family: 'Inter', sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card-icon { position: absolute; left: -50px; top: 0; width: 36px; height: 36px; background: #0284c7; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; box-shadow: 0 2px 4px rgba(2, 132, 199, 0.3); }
+        .card-line { position: absolute; left: -33px; top: 40px; bottom: -30px; width: 2px; background: #e2e8f0; }
+        .avatar { background: #0f766e; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; border: 2px solid #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .module-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); transition: transform 0.2s ease, box-shadow 0.2s ease; display: flex; flex-direction: column; gap: 12px;}
+        .module-card:hover { transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.08); border-color: #cbd5e1; }
+        .stDataFrame { border-radius: 8px; border: 1px solid #e2e8f0; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -187,50 +210,53 @@ def run_app():
     if "status" not in st.session_state: st.session_state.status = "Draft"
     if "confirmed" not in st.session_state: st.session_state.confirmed = False
 
-    # SIDEBAR
     with st.sidebar:
-        st.subheader("Reg Engagement")
-        menu = st.radio("Module", [
+        st.title("🏦 Reg Engagement")
+        st.markdown("<br>", unsafe_allow_html=True)
+        menu = st.radio("Navigation", [
             "Engagement Creation",
             "Document Search",
             "Control Mapping",
             "Response Library"
-        ])
+        ], label_visibility="collapsed")
+        
         st.divider()
-        api_key = st.text_input("Gemini API Key", type="password")
+        st.caption("⚙️ API Configuration")
+        api_key = st.text_input("Gemini API Key", type="password", placeholder="Enter key...")
         model_id = st.text_input("Model ID", value="models/gemini-3.6-flash")
 
     if "Engagement Creation" in menu:
-        st.markdown(f'<div class="udp-header"><h1>{menu}</h1><p style="color: #94a3b8; font-size: 13px; margin: 5px 0 0 0;">Reg Engagement Platform</p></div>', unsafe_allow_html=True)
-        url_input = st.text_input("Engagement Letter URL")
+        st.markdown(f'<div class="udp-header"><h1 style="margin:0; font-size:28px;">{menu}</h1></div>', unsafe_allow_html=True)
         
-        if st.button("Extract Engagement Details"):
-            if not api_key: st.error("API Key required.")
-            else:
-                with st.spinner("Extracting Details..."):
-                    st.session_state.data = process_engagement_extraction(url_input, api_key, model_id)
-                    st.session_state.confirmed = False
-                    st.session_state.tasks = []
+        with st.container(border=True):
+            url_input = st.text_input("Engagement Letter URL", placeholder="https://...")
+            if st.button("Extract Engagement Details", type="primary"):
+                if not api_key: st.error("API Key required.")
+                else:
+                    with st.spinner("Extracting Details..."):
+                        st.session_state.data = process_engagement_extraction(url_input, api_key, model_id)
+                        st.session_state.confirmed = False
+                        st.session_state.tasks = []
 
         if st.session_state.data:
             d = st.session_state.data
             st.markdown(f"""
-            <div style="background:#0d1b2a; padding:15px 25px; border-radius:12px 12px 0 0; display:flex; justify-content:space-between; align-items:center; color:white; font-family:sans-serif;">
+            <div style="background: #0f172a; padding: 24px; border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center; color: white; font-family: 'Inter', sans-serif; margin-top: 20px;">
                 <div>
-                    <div style="color:#898781; font-size:11px;">{d.get('engagement_id') or 'None'} &middot; {d.get('process_id') or 'None'}</div>
-                    <div style="font-size:19px; font-weight:700;">{d.get('title') or 'Engagement'}</div>
-                    <div style="margin-top:5px;"><span style="background:#fef3c7; color:#d97706; padding:3px 15px; border-radius:20px; font-size:11px; font-weight:600;">● {st.session_state.status}</span></div>
+                    <div style="color: #94a3b8; font-size: 12px; font-weight: 500; margin-bottom: 4px;">{d.get('engagement_id') or 'None'} &middot; {d.get('process_id') or 'None'}</div>
+                    <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.5px;">{d.get('title') or 'Engagement'}</div>
+                    <div style="margin-top: 10px;"><span style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); padding: 4px 12px; border-radius: 16px; font-size: 11px; font-weight: 600;">● {st.session_state.status}</span></div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
             
-            col_h1, col_h2, col_h3 = st.columns([5, 1, 1])
+            col_h1, col_h2, col_h3 = st.columns([5, 1.2, 1.2])
             with col_h2:
-                st.markdown("<div style='margin-top:-63px;'>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-top:-70px;'>", unsafe_allow_html=True)
                 if st.button("Save draft", use_container_width=True): st.toast("Saved!")
                 st.markdown("</div>", unsafe_allow_html=True)
             with col_h3:
-                st.markdown("<div style='margin-top:-63px;'>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-top:-70px;'>", unsafe_allow_html=True)
                 btn_lbl = "Submit to Regulators" if st.session_state.confirmed else "Task Creation"
                 if st.button(btn_lbl, type="primary", use_container_width=True):
                     if not st.session_state.confirmed:
@@ -244,114 +270,112 @@ def run_app():
                         st.balloons()
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            tabs_names = ["📋 Engagement Details", "💬 Decision feeds"]
-            if st.session_state.confirmed: tabs_names.append("✅ Tasks")
-            tabs = st.tabs(tabs_names)
+            tabs_names = ["📋 Engagement Details", "💬 Decision Feeds"]
+            if st.session_state.confirmed: tabs_names.append("✅ Action Tasks")
+            engage_tabs = st.tabs(tabs_names)
 
-            with tabs[0]:
-                st.markdown('<div style="font-size:14px; font-weight:700; margin-bottom:10px;">Themes & Domain</div>', unsafe_allow_html=True)
-                c_c1, c_c2 = st.columns(2)
-                with c_c1: st.multiselect("Themes", THEMES_LIST, default=d.get('themes', []))
-                with c_c2: st.multiselect("Business Domain", DOMAINS_LIST, default=d.get('domain', []))
-                
-                st.markdown('<div style="font-size:14px; font-weight:700; margin-top:20px; margin-bottom:10px;">Date Fields</div>', unsafe_allow_html=True)
-                c_d1, c_d2 = st.columns(2)
-                with c_d1: st.date_input("Internal deadline *", value=safe_date_parse(d.get('internal_deadline')))
-                with c_d2: st.date_input("Submission deadline *", value=safe_date_parse(d.get('submission_deadline')))
-                
-                st.markdown('<div style="font-size:14px; font-weight:700; margin-top:20px; margin-bottom:10px;">Ownership & Status</div>', unsafe_allow_html=True)
-                c_o1, c_o2 = st.columns(2)
-                with c_o1:
-                    st.markdown("""<div style="background:#f8fafc; border:1px solid #e1e0d9; padding:10px; border-radius:4px; display:flex; align-items:center; gap:12px; font-family:sans-serif;">
-                        <div style="background:#134e4a; color:white; width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700;">JD</div>
-                        <div><div style="font-size:12.5px; font-weight:700;">John Doe 🔒</div><div style="font-size:10.5px; color:#64748b;">Regulatory Affairs</div></div>
-                    </div>""", unsafe_allow_html=True)
-                with c_o2: st.session_state.status = st.selectbox("Process Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(st.session_state.status))
+            with engage_tabs[0]:
+                with st.container(border=True):
+                    st.subheader("Themes & Domain")
+                    c_c1, c_c2 = st.columns(2)
+                    with c_c1: st.multiselect("Themes", THEMES_LIST, default=d.get('themes', []))
+                    with c_c2: st.multiselect("Business Domain", DOMAINS_LIST, default=d.get('domain', []))
+                    
+                    st.divider()
+                    st.subheader("Timeline & Ownership")
+                    c_d1, c_d2, c_o2 = st.columns([1, 1, 1])
+                    with c_d1: st.date_input("Internal deadline *", value=safe_date_parse(d.get('internal_deadline')))
+                    with c_d2: st.date_input("Submission deadline *", value=safe_date_parse(d.get('submission_deadline')))
+                    with c_o2: st.session_state.status = st.selectbox("Process Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(st.session_state.status))
+                    
+                components.html(_get_dashboard_html(d), height=650)
 
-                components.html(_get_dashboard_html(d), height=700)
-
-            with tabs[1]:
+            with engage_tabs[1]:
+                st.markdown("<br>", unsafe_allow_html=True)
                 rationale = [("📄 Description", d.get('description','N/A')), ("🎯 Scope", d.get('scope','N/A')), ("📈 Impact", d.get('impact','N/A'))]
                 for icon, txt in rationale:
                     st.markdown(f"""<div class="rationale-card"><div class="card-icon">{icon[0]}</div><div class="card-line"></div>
-                        <div style="font-weight:700; color:#0d1b2a; font-size:13px; margin-bottom:5px;">{icon[2:]}</div>
-                        <div style="font-size:13px; color:#334155; line-height:1.6; border:1px solid #f1f5f9; padding:15px; background:#fcfcfb;">{txt}</div>
+                        <div style="font-weight:600; color:#0f172a; font-size:14px; margin-bottom:8px;">{icon[2:]}</div>
+                        <div style="font-size:13px; color:#475569; line-height:1.6; border:1px solid #f1f5f9; padding:16px; background:#f8fafc; border-radius: 8px;">{txt}</div>
                     </div>""", unsafe_allow_html=True)
 
             if st.session_state.confirmed:
-                with tabs[2]:
-                    st.markdown('<div style="font-size:18px; font-weight:800; margin-bottom:20px; color:#0d1b2a;">Strategic Task Roadmap</div>', unsafe_allow_html=True)
+                with engage_tabs[2]:
+                    st.markdown("<br>", unsafe_allow_html=True)
                     for i, t in enumerate(st.session_state.tasks, start=1):
-                        with st.expander(f"Task {i}: {t.get('title','Task')}"):
+                        with st.expander(f"Task {i}: {t.get('title','Task')}", expanded=True):
                             tc1, tc2 = st.columns(2)
-                            t['status'] = tc1.selectbox(f"Status T{i}", TASK_STATUS_OPTIONS, key=f"s_{i}")
-                            t['date'] = tc2.date_input(f"Task Deadline Date T{i}", value=safe_date_parse(t.get('date')), key=f"d_{i}")
+                            t['status'] = tc1.selectbox(f"Status", TASK_STATUS_OPTIONS, key=f"s_{i}")
+                            t['date'] = tc2.date_input(f"Deadline", value=safe_date_parse(t.get('date')), key=f"d_{i}")
                             t['desc'] = st.text_area("Description", value=t.get('desc',''), key=f"de_{i}")
-                            st.markdown(f'<div style="display:flex; justify-content:flex-end; align-items:center; gap:10px;"><span style="font-size:11px;">Owner: {t.get("owner")}</span><div class="avatar">{t.get("initials")}</div></div>', unsafe_allow_html=True)
+                            st.markdown(f'<div style="display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-top: 10px;"><span style="font-size:12px; color: #64748b; font-weight: 500;">Assignee: {t.get("owner")}</span><div class="avatar">{t.get("initials")}</div></div>', unsafe_allow_html=True)
                     if st.button("＋ Add Operational Task"):
                         st.session_state.tasks.append({"title": "Manual Item", "status": "Not Started", "date": "2026-12-01", "owner": "John Doe", "initials": "JD", "desc": ""})
                         st.rerun()
 
     elif "Document Search" in menu:
-        st.markdown(f'<div class="udp-header"><h1>{menu}</h1><p style="color: #94a3b8; font-size: 13px; margin: 5px 0 0 0;">Reg Engagement Platform</p></div>', unsafe_allow_html=True)
-        search_query = st.text_input("Search records by keyword, engagement ID, or regulator...", label_visibility="collapsed", placeholder="Search records...")
+        st.markdown(f'<div class="udp-header"><h1 style="margin:0; font-size:28px;">{menu}</h1></div>', unsafe_allow_html=True)
+        search_query = st.text_input("Search records by keyword, engagement ID, or regulator...", label_visibility="collapsed", placeholder="🔍 Search records...")
         st.markdown("<br>", unsafe_allow_html=True)
-        for doc in DUMMY_DOCUMENTS:
-            if search_query.lower() in doc['title'].lower() or search_query.lower() in doc['regulator'].lower() or not search_query:
+        
+        filtered_docs = [doc for doc in DUMMY_DOCUMENTS if search_query.lower() in doc['title'].lower() or search_query.lower() in doc['regulator'].lower() or not search_query]
+        
+        if filtered_docs:
+            df_docs = pd.DataFrame(filtered_docs)
+            df_docs.rename(columns={'id': 'Engagement ID', 'title': 'Title', 'regulator': 'Regulator', 'date': 'Target Date', 'status': 'Status', 'theme': 'Theme'}, inplace=True)
+            st.dataframe(df_docs, use_container_width=True, hide_index=True)
+        else:
+            st.info("No documents match your search criteria.")
+
+    elif "Control Mapping" in menu:
+        st.markdown(f'<div class="udp-header"><h1 style="margin:0; font-size:28px;">{menu}</h1></div>', unsafe_allow_html=True)
+        
+        df_controls = pd.DataFrame(DUMMY_CONTROLS)
+        df_controls.rename(columns={'eng_id': 'Engagement ID', 'title': 'Engagement Title', 'ctrl_id': 'Control ID', 'control': 'Mapped Control', 'status': 'Coverage Status'}, inplace=True)
+        
+        col_c1, col_c2 = st.columns([4, 1])
+        with col_c1:
+            st.dataframe(df_controls, use_container_width=True, hide_index=True)
+        with col_c2:
+            st.metric("Total Controls", len(DUMMY_CONTROLS))
+            st.metric("Coverage Gaps", sum(1 for c in DUMMY_CONTROLS if c['status'] == 'Gap'))
+
+    elif "Response Library" in menu:
+        st.markdown(f'<div class="udp-header"><h1 style="margin:0; font-size:28px;">{menu}</h1></div>', unsafe_allow_html=True)
+        
+        tabs = st.tabs(["Reusable Response", "Draft"])
+        
+        reusable_resps = [r for r in DUMMY_RESPONSES if r.get('status', 'Reusable') == 'Reusable']
+        draft_resps = [r for r in DUMMY_RESPONSES if r.get('status') == 'Draft']
+        
+        def render_response_cards(responses):
+            if not responses:
+                st.info("No responses found in this category.")
+            for resp in responses:
                 st.markdown(f"""
                 <div class="module-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                         <div>
-                            <span style="font-family:monospace; font-size:11px; background:#f1f5f9; padding:2px 6px; border-radius:4px;">{doc['id']}</span>
-                            <h3 style="margin:5px 0 0 0; font-size:16px; color:#0d1b2a;">{doc['title']}</h3>
+                            <span style="font-size: 10px; font-weight: 600; background: #e2e8f0; color: #475569; padding: 4px 10px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.5px;">{resp['category']}</span>
+                            <div style="font-size: 17px; font-weight: 600; color: #0f172a; margin-top: 10px;">{resp['title']}</div>
                         </div>
-                        <span style="background:#e0f2fe; color:#0369a1; padding:2px 10px; border-radius:12px; font-size:10px; font-weight:700;">{doc['theme']}</span>
+                        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
+                            <span style="font-size: 12px; color: #64748b; background: #f8fafc; padding: 4px 10px; border-radius: 16px; border: 1px solid #f1f5f9;">Used <b style="color: #0284c7;">{resp['usage']} times</b></span>
+                            <span style="font-size: 11px; color: #94a3b8; font-weight: 500;">{resp['version']}</span>
+                        </div>
                     </div>
-                    <div style="margin-top:10px; font-size:12px; color:#64748b; display:flex; gap:20px;">
-                        <span>Regulator: <b>{doc['regulator']}</b></span>
-                        <span>Date: <b>{doc['date']}</b></span>
-                        <span>Status: <b>{doc['status']}</b></span>
+                    <div style="margin-top: 8px; font-size: 12px; color: #64748b; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #f1f5f9; padding-top: 12px;">
+                        <span>Last Updated: <b style="color: #334155;">{resp['last_updated']}</b></span>
+                        <a href="#" style="color: #0284c7; text-decoration: none; font-weight: 600;">Download Template ⬇</a>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-
-    elif "Control Mapping" in menu:
-        st.markdown(f'<div class="udp-header"><h1>{menu}</h1><p style="color: #94a3b8; font-size: 13px; margin: 5px 0 0 0;">Reg Engagement Platform</p></div>', unsafe_allow_html=True)
-        for m in DUMMY_CONTROLS:
-            badge_color = "#0ca30c" if m['status'] == "Covered" else ("#d97706" if m['status'] == "Partially Covered" else "#d03b3b")
-            st.markdown(f"""
-            <div class="module-card">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <span style="font-size:11px; color:#64748b;">{m['eng_id']}</span>
-                        <div style="font-size:15px; font-weight:700; color:#0d1b2a;">{m['title']}</div>
-                    </div>
-                    <span style="border:1px solid {badge_color}; color:{badge_color}; padding:3px 10px; border-radius:12px; font-size:10px; font-weight:800; text-transform:uppercase;">{m['status']}</span>
-                </div>
-                <div style="margin-top:12px; font-size:12px; background:#f8fafc; padding:8px 12px; border-radius:6px; display:flex; justify-content:space-between;">
-                    <span>Linked Control ID: <b>{m['ctrl_id']}</b></span>
-                    <span>Mapped Control: <b>{m['control']}</b></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    elif "Response Library" in menu:
-        st.markdown(f'<div class="udp-header"><h1>{menu}</h1><p style="color: #94a3b8; font-size: 13px; margin: 5px 0 0 0;">Reg Engagement Platform</p></div>', unsafe_allow_html=True)
-        for resp in DUMMY_RESPONSES:
-            st.markdown(f"""
-            <div class="module-card">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <span style="font-size:10px; font-weight:700; background:#f1f5f9; color:#475569; padding:2px 8px; border-radius:4px; text-transform:uppercase;">{resp['category']}</span>
-                        <div style="font-size:16px; font-weight:700; color:#0d1b2a; margin-top:5px;">{resp['title']}</div>
-                    </div>
-                    <span style="font-size:12px; color:#64748b;">Used <b>{resp['usage']}</b></span>
-                </div>
-                <div style="margin-top:12px; font-size:11.5px; color:#64748b; display:flex; justify-content:flex-end; border-top:1px solid #f1f5f9; padding-top:8px;">
-                    <span>Version: <b>{resp['version']}</b></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                
+        with tabs[0]:
+            render_response_cards(reusable_resps)
+            
+        with tabs[1]:
+            render_response_cards(draft_resps)
 
 if __name__ == "__main__":
     run_app()
